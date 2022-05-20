@@ -211,10 +211,7 @@ impl Greetd {
     }
 
     #[inline]
-    pub fn authentication_response<T>(
-        &mut self,
-        response: impl AsRef<Option<T>>,
-    ) -> Result<(), std::io::Error>
+    pub fn authentication_response<T>(&mut self, response: Option<T>) -> Result<(), std::io::Error>
     where
         T: Writeable,
     {
@@ -239,7 +236,10 @@ impl Greetd {
     }
 
     #[inline]
-    pub fn start_session(&mut self, cmd: &[impl Writeable]) -> Result<(), std::io::Error> {
+    pub fn start_session<T>(&mut self, cmd: &[T]) -> Result<(), std::io::Error>
+    where
+        T: Writeable,
+    {
         if self
             .finishing
             .swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -319,7 +319,7 @@ pub enum Request<'a, T: Writeable> {
     /// If an auth message is returned, it should be answered with a
     /// Request::PostAuthMessageResponse. If a success is returned, the session
     /// can then be started with Request::StartSession.
-    PostAuthMessageResponse { response: &'a Option<T> },
+    PostAuthMessageResponse { response: Option<&'a T> },
 
     /// Start a successfully logged in session. This will fail if the session
     /// has pending messages or has encountered an error.
