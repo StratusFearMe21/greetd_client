@@ -132,7 +132,7 @@ impl AsRawFd for Greetd {
 impl Drop for Greetd {
     fn drop(&mut self) {
         if self.started_session && !self.finishing.load(std::sync::atomic::Ordering::SeqCst) {
-            let wtr = Request::CancelSession;
+            let wtr: Request<u8> = Request::CancelSession;
             let len: u32 = wtr.write_len().0 as _;
             self.write_msg(|socket| {
                 socket.write_all(&len.to_ne_bytes())?;
@@ -158,7 +158,7 @@ impl Greetd {
     }
 
     #[inline]
-    pub fn create_session(&mut self, username: String) -> Result<(), std::io::Error> {
+    pub fn create_session(&mut self, username: &impl Writeable) -> Result<(), std::io::Error> {
         if self.started_session {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
@@ -195,7 +195,7 @@ impl Greetd {
                 "greetd cannot process multiple events at once",
             ))
         } else {
-            let wtr = Request::CancelSession;
+            let wtr: Request<u8> = Request::CancelSession;
             let len: u32 = wtr.write_len().0 as _;
             self.started_session = false;
             self.write_msg(|socket| {
@@ -208,7 +208,7 @@ impl Greetd {
     #[inline]
     pub fn authentication_response(
         &mut self,
-        response: Option<String>,
+        response: Option<&impl Writeable>,
     ) -> Result<(), std::io::Error> {
         if self
             .request_in_queue
@@ -229,7 +229,7 @@ impl Greetd {
     }
 
     #[inline]
-    pub fn start_session(&mut self, cmd: Vec<String>) -> Result<(), std::io::Error> {
+    pub fn start_session(&mut self, cmd: &[&impl Writeable]) -> Result<(), std::io::Error> {
         if self
             .finishing
             .swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -289,7 +289,7 @@ impl Greetd {
 /// }
 /// ```
 #[derive(Debug)]
-pub enum Request {
+pub enum Request<'a, T: Writeable> {
     /// CreateSession initiates a login attempt for the given user.
     /// CreateSession returns either a Response::AuthMessage,
     /// Response::Success or Response::Failure.
@@ -301,7 +301,7 @@ pub enum Request {
     /// If a login flow needs to be aborted at any point, send
     /// Request::CancelSession. Note that the session is cancelled
     /// automatically on error.
-    CreateSession { username: String },
+    CreateSession { username: &'a T },
 
     /// PostAuthMessageResponse responds to the last auth message, and returns
     /// either a Response::AuthMessage, Response::Success or Response::Failure.
@@ -309,11 +309,11 @@ pub enum Request {
     /// If an auth message is returned, it should be answered with a
     /// Request::PostAuthMessageResponse. If a success is returned, the session
     /// can then be started with Request::StartSession.
-    PostAuthMessageResponse { response: Option<String> },
+    PostAuthMessageResponse { response: Option<&'a T> },
 
     /// Start a successfully logged in session. This will fail if the session
     /// has pending messages or has encountered an error.
-    StartSession { cmd: Vec<String> },
+    StartSession { cmd: &'a [T] },
 
     /// Cancel a session. This can only be done if the session has not been
     /// started. Cancel does not have to be called if an error has been
@@ -321,13 +321,13 @@ pub enum Request {
     CancelSession,
 }
 
-impl Display for Request {
+impl<'a, T: Writeable> Display for Request<'a, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.write_to(f)
     }
 }
 
-impl Writeable for Request {
+impl<'a, T: Writeable> Writeable for Request<'a, T> {
     fn write_to<W: core::fmt::Write + ?Sized>(&self, sink: &mut W) -> core::fmt::Result {
         sink.write_str("{\"type\":\"")?;
         sink.write_str(match *self {
@@ -338,7 +338,7 @@ impl Writeable for Request {
         })?;
         sink.write_char('\"')?;
         match *self {
-            Request::StartSession { ref cmd } => {
+            Request::StartSession { cmd } => {
                 sink.write_str(",\"cmd\":[")?;
 
                 let mut iter = cmd.iter();
@@ -356,13 +356,13 @@ impl Writeable for Request {
                 })?;
                 sink.write_char(']')?;
             }
-            Request::CreateSession { ref username } => {
+            Request::CreateSession { username } => {
                 sink.write_str(",\"username\":\"")?;
                 username.write_to(sink)?;
                 sink.write_char('\"')?;
             }
             Request::CancelSession => {}
-            Request::PostAuthMessageResponse { ref response } => {
+            Request::PostAuthMessageResponse { response } => {
                 if let Some(res) = response {
                     sink.write_str(",\"response\":\"")?;
                     res.write_to(sink)?;
@@ -376,17 +376,17 @@ impl Writeable for Request {
     fn write_len(&self) -> writeable::LengthHint {
         match *self {
             Request::CancelSession => "{\"type\":\"cancel_session\"}".write_len(),
-            Request::CreateSession { ref username } => {
+            Request::CreateSession { username } => {
                 "{\"type\":\"create_session\",\"username\":\"\"}".write_len() + username.write_len()
             }
-            Request::PostAuthMessageResponse { ref response } => {
+            Request::PostAuthMessageResponse { response } => {
                 let mut len = "{\"type\":\"post_auth_message_response\"}".write_len();
                 if let Some(res) = response {
                     len += ",\"response\":\"\"".write_len() + res.write_len();
                 }
                 len
             }
-            Request::StartSession { ref cmd } => {
+            Request::StartSession { cmd } => {
                 let mut len = "{\"type\":\"start_session\",\"cmd\":[]}".write_len();
                 let add_len = cmd.len();
 
@@ -493,8 +493,10 @@ mod tests {
 
     #[test]
     fn create_session() {
-        let username = "isaacm".to_string();
-        let wtr = Request::CreateSession { username };
+        let username = "isaacm";
+        let wtr = Request::CreateSession {
+            username: &username,
+        };
         let result = "{\"type\":\"create_session\",\"username\":\"isaacm\"}";
         let mut written = String::new();
         wtr.write_to(&mut written).unwrap();
@@ -505,7 +507,7 @@ mod tests {
 
     #[test]
     fn start_session() {
-        let session = vec!["/etc/ly/wsetup.sh".to_string(), "dwl".to_string()];
+        let session = &["/etc/ly/wsetup.sh", "dwl"];
         let wtr = Request::StartSession { cmd: session };
         let result = "{\"type\":\"start_session\",\"cmd\":[\"/etc/ly/wsetup.sh\",\"dwl\"]}";
         let mut written = String::new();
