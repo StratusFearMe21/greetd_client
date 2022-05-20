@@ -89,10 +89,17 @@ impl EventSource for GreetdSource {
                 error_type: ErrorType::AuthError,
                 ..
             } => {
-                *self.socket.borrow_mut() = UnixStream::connect(
-                    std::env::var("GREETD_SOCK")
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?,
-                )?;
+                let wtr = Request::CancelSession;
+                let len: u32 = wtr.write_len().0 as _;
+                self.write_msg(|socket| {
+                    socket.write_all(&len.to_ne_bytes())?;
+                    socket.write_fmt(format_args!("{}", wtr))?;
+                    *socket = UnixStream::connect(
+                        std::env::var("GREETD_SOCK")
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?,
+                    )?;
+                    Ok(())
+                })?;
                 callback(response, &mut ());
                 return Ok(PostAction::Reregister);
             }
@@ -132,6 +139,17 @@ impl EventSource for GreetdSource {
     fn unregister(&mut self, poll: &mut calloop::Poll) -> Result<(), std::io::Error> {
         self.token = Token::invalid();
         poll.unregister(self.socket.borrow().as_raw_fd())
+    }
+}
+
+impl GreetdSource {
+    #[inline]
+    fn write_msg(
+        &self,
+        callback: impl Fn(&mut UnixStream) -> Result<(), std::io::Error>,
+    ) -> Result<(), std::io::Error> {
+        let mut lock = self.socket.borrow_mut();
+        callback(&mut *lock)
     }
 }
 
