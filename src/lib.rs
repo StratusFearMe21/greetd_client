@@ -160,7 +160,7 @@ impl Greetd {
     #[inline]
     pub fn create_session<T>(&mut self, username: T) -> Result<(), std::io::Error>
     where
-        T: Writeable + AsRef<T>,
+        T: Writeable,
     {
         if self.started_session {
             return Err(std::io::Error::new(
@@ -178,7 +178,7 @@ impl Greetd {
             ))
         } else {
             let wtr = Request::CreateSession {
-                username: username.as_ref(),
+                username: &username,
             };
             let len: u32 = wtr.write_len().0 as _;
             self.started_session = true;
