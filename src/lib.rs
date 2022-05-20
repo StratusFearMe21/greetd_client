@@ -158,7 +158,10 @@ impl Greetd {
     }
 
     #[inline]
-    pub fn create_session(&mut self, username: &impl Writeable) -> Result<(), std::io::Error> {
+    pub fn create_session<T>(&mut self, username: impl AsRef<T>) -> Result<(), std::io::Error>
+    where
+        T: Writeable,
+    {
         if self.started_session {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
@@ -174,7 +177,9 @@ impl Greetd {
                 "greetd cannot process multiple events at once",
             ))
         } else {
-            let wtr = Request::CreateSession { username };
+            let wtr = Request::CreateSession {
+                username: username.as_ref(),
+            };
             let len: u32 = wtr.write_len().0 as _;
             self.started_session = true;
             self.write_msg(|socket| {
@@ -206,10 +211,13 @@ impl Greetd {
     }
 
     #[inline]
-    pub fn authentication_response(
+    pub fn authentication_response<T>(
         &mut self,
-        response: Option<&impl Writeable>,
-    ) -> Result<(), std::io::Error> {
+        response: impl AsRef<Option<T>>,
+    ) -> Result<(), std::io::Error>
+    where
+        T: Writeable,
+    {
         if self
             .request_in_queue
             .swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -219,7 +227,9 @@ impl Greetd {
                 "greetd cannot process multiple events at once",
             ))
         } else {
-            let wtr = Request::PostAuthMessageResponse { response };
+            let wtr = Request::PostAuthMessageResponse {
+                response: response.as_ref(),
+            };
             let len: u32 = wtr.write_len().0 as _;
             self.write_msg(|socket| {
                 socket.write_all(&len.to_ne_bytes())?;
@@ -229,7 +239,7 @@ impl Greetd {
     }
 
     #[inline]
-    pub fn start_session(&mut self, cmd: &[&impl Writeable]) -> Result<(), std::io::Error> {
+    pub fn start_session(&mut self, cmd: &[impl Writeable]) -> Result<(), std::io::Error> {
         if self
             .finishing
             .swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -309,7 +319,7 @@ pub enum Request<'a, T: Writeable> {
     /// If an auth message is returned, it should be answered with a
     /// Request::PostAuthMessageResponse. If a success is returned, the session
     /// can then be started with Request::StartSession.
-    PostAuthMessageResponse { response: Option<&'a T> },
+    PostAuthMessageResponse { response: &'a Option<T> },
 
     /// Start a successfully logged in session. This will fail if the session
     /// has pending messages or has encountered an error.
