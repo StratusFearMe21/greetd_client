@@ -47,7 +47,7 @@ use writeable::{LengthHint, Writeable};
 
 pub struct Greetd {
     socket: Rc<RefCell<UnixStream>>,
-    started_session: bool,
+    started_session: Rc<AtomicBool>,
     request_in_queue: Rc<AtomicBool>,
     finishing: Rc<AtomicBool>,
 }
@@ -55,6 +55,7 @@ pub struct Greetd {
 pub struct GreetdSource {
     socket: Rc<RefCell<UnixStream>>,
     request_in_queue: Rc<AtomicBool>,
+    started_session: Rc<AtomicBool>,
     token: Token,
     finishing: Rc<AtomicBool>,
 }
@@ -91,6 +92,8 @@ impl EventSource for GreetdSource {
             } => {
                 let wtr = Request::CancelSession;
                 let len: u32 = wtr.write_len().0 as _;
+                self.started_session
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 self.write_msg(|socket| {
                     socket.write_all(&len.to_ne_bytes())?;
                     socket.write_fmt(format_args!("{}", wtr))?;
@@ -161,7 +164,11 @@ impl AsRawFd for Greetd {
 
 impl Drop for Greetd {
     fn drop(&mut self) {
-        if self.started_session && !self.finishing.load(std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .started_session
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && !self.finishing.load(std::sync::atomic::Ordering::SeqCst)
+        {
             let wtr = Request::CancelSession;
             let len: u32 = wtr.write_len().0 as _;
             self.write_msg(|socket| {
@@ -183,13 +190,16 @@ impl Greetd {
             )?)),
             request_in_queue: Rc::new(AtomicBool::new(false)),
             finishing: Rc::new(AtomicBool::new(false)),
-            started_session: false,
+            started_session: Rc::new(AtomicBool::new(false)),
         })
     }
 
     #[inline]
     pub fn create_session(&mut self, username: &str) -> Result<(), std::io::Error> {
-        if self.started_session {
+        if self
+            .started_session
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 "Cannot start multiple sessions",
@@ -206,36 +216,9 @@ impl Greetd {
         } else {
             let wtr = Request::CreateSession { username };
             let len: u32 = wtr.write_len().0 as _;
-            self.started_session = true;
             self.write_msg(|socket| {
                 socket.write_all(&len.to_ne_bytes())?;
                 socket.write_fmt(format_args!("{}", wtr))
-            })
-        }
-    }
-
-    #[inline]
-    pub fn cancel_session(&mut self) -> Result<(), std::io::Error> {
-        if self
-            .request_in_queue
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "greetd cannot process multiple events at once",
-            ))
-        } else {
-            let wtr = Request::CancelSession;
-            let len: u32 = wtr.write_len().0 as _;
-            self.started_session = false;
-            self.write_msg(|socket| {
-                socket.write_all(&len.to_ne_bytes())?;
-                socket.write_fmt(format_args!("{}", wtr))?;
-                *socket = UnixStream::connect(
-                    std::env::var("GREETD_SOCK")
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?,
-                )?;
-                Ok(())
             })
         }
     }
@@ -299,6 +282,7 @@ impl Greetd {
             request_in_queue: self.request_in_queue.clone(),
             token: Token::invalid(),
             finishing: self.finishing.clone(),
+            started_session: self.started_session.clone(),
         }
     }
 
