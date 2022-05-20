@@ -93,6 +93,7 @@ impl EventSource for GreetdSource {
                     std::env::var("GREETD_SOCK")
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?,
                 )?;
+                callback(response, &mut ());
                 return Ok(PostAction::Reregister);
             }
             _ => callback(response, &mut ()),
@@ -514,7 +515,7 @@ mod tests {
             username: &username,
         };
         let result = "{\"type\":\"create_session\",\"username\":\"isaacm\"}";
-        let mut written = String::new();
+        let mut written = String::with_capacity(wtr.write_len().0);
         wtr.write_to(&mut written).unwrap();
 
         assert_eq!(result, written);
@@ -526,7 +527,7 @@ mod tests {
         let session = &["/etc/ly/wsetup.sh", "dwl"];
         let wtr = Request::StartSession { cmd: session };
         let result = "{\"type\":\"start_session\",\"cmd\":[\"/etc/ly/wsetup.sh\",\"dwl\"]}";
-        let mut written = String::new();
+        let mut written = String::with_capacity(wtr.write_len().0);
         wtr.write_to(&mut written).unwrap();
         assert_eq!(result, written);
         assert_eq!(wtr.write_len().0, result.len());
