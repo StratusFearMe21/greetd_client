@@ -132,7 +132,7 @@ impl AsRawFd for Greetd {
 impl Drop for Greetd {
     fn drop(&mut self) {
         if self.started_session && !self.finishing.load(std::sync::atomic::Ordering::SeqCst) {
-            let wtr: Request<u8> = Request::CancelSession;
+            let wtr = Request::CancelSession;
             let len: u32 = wtr.write_len().0 as _;
             self.write_msg(|socket| {
                 socket.write_all(&len.to_ne_bytes())?;
@@ -158,11 +158,7 @@ impl Greetd {
     }
 
     #[inline]
-    pub fn create_session<T, W>(&mut self, username: T) -> Result<(), std::io::Error>
-    where
-        W: Writeable,
-        T: AsRef<W>,
-    {
+    pub fn create_session(&mut self, username: &str) -> Result<(), std::io::Error> {
         if self.started_session {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
@@ -178,9 +174,7 @@ impl Greetd {
                 "greetd cannot process multiple events at once",
             ))
         } else {
-            let wtr = Request::CreateSession {
-                username: username.as_ref(),
-            };
+            let wtr = Request::CreateSession { username };
             let len: u32 = wtr.write_len().0 as _;
             self.started_session = true;
             self.write_msg(|socket| {
@@ -201,7 +195,7 @@ impl Greetd {
                 "greetd cannot process multiple events at once",
             ))
         } else {
-            let wtr: Request<u8> = Request::CancelSession;
+            let wtr = Request::CancelSession;
             let len: u32 = wtr.write_len().0 as _;
             self.started_session = false;
             self.write_msg(|socket| {
@@ -212,10 +206,10 @@ impl Greetd {
     }
 
     #[inline]
-    pub fn authentication_response<T>(&mut self, response: Option<T>) -> Result<(), std::io::Error>
-    where
-        T: Writeable,
-    {
+    pub fn authentication_response(
+        &mut self,
+        response: Option<&str>,
+    ) -> Result<(), std::io::Error> {
         if self
             .request_in_queue
             .swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -225,9 +219,7 @@ impl Greetd {
                 "greetd cannot process multiple events at once",
             ))
         } else {
-            let wtr = Request::PostAuthMessageResponse {
-                response: response.as_ref(),
-            };
+            let wtr = Request::PostAuthMessageResponse { response };
             let len: u32 = wtr.write_len().0 as _;
             self.write_msg(|socket| {
                 socket.write_all(&len.to_ne_bytes())?;
@@ -237,10 +229,7 @@ impl Greetd {
     }
 
     #[inline]
-    pub fn start_session<T>(&mut self, cmd: &[T]) -> Result<(), std::io::Error>
-    where
-        T: Writeable,
-    {
+    pub fn start_session(&mut self, cmd: &[&str]) -> Result<(), std::io::Error> {
         if self
             .finishing
             .swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -300,7 +289,7 @@ impl Greetd {
 /// }
 /// ```
 #[derive(Debug)]
-pub enum Request<'a, T: Writeable> {
+pub enum Request<'a> {
     /// CreateSession initiates a login attempt for the given user.
     /// CreateSession returns either a Response::AuthMessage,
     /// Response::Success or Response::Failure.
@@ -312,7 +301,7 @@ pub enum Request<'a, T: Writeable> {
     /// If a login flow needs to be aborted at any point, send
     /// Request::CancelSession. Note that the session is cancelled
     /// automatically on error.
-    CreateSession { username: &'a T },
+    CreateSession { username: &'a str },
 
     /// PostAuthMessageResponse responds to the last auth message, and returns
     /// either a Response::AuthMessage, Response::Success or Response::Failure.
@@ -320,11 +309,11 @@ pub enum Request<'a, T: Writeable> {
     /// If an auth message is returned, it should be answered with a
     /// Request::PostAuthMessageResponse. If a success is returned, the session
     /// can then be started with Request::StartSession.
-    PostAuthMessageResponse { response: Option<&'a T> },
+    PostAuthMessageResponse { response: Option<&'a str> },
 
     /// Start a successfully logged in session. This will fail if the session
     /// has pending messages or has encountered an error.
-    StartSession { cmd: &'a [T] },
+    StartSession { cmd: &'a [&'a str] },
 
     /// Cancel a session. This can only be done if the session has not been
     /// started. Cancel does not have to be called if an error has been
@@ -332,13 +321,13 @@ pub enum Request<'a, T: Writeable> {
     CancelSession,
 }
 
-impl<'a, T: Writeable> Display for Request<'a, T> {
+impl<'a> Display for Request<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.write_to(f)
     }
 }
 
-impl<'a, T: Writeable> Writeable for Request<'a, T> {
+impl<'a> Writeable for Request<'a> {
     fn write_to<W: core::fmt::Write + ?Sized>(&self, sink: &mut W) -> core::fmt::Result {
         sink.write_str("{\"type\":\"")?;
         sink.write_str(match *self {
