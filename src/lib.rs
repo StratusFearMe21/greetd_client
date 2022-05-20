@@ -158,9 +158,9 @@ impl Greetd {
     }
 
     #[inline]
-    pub fn create_session<T>(&mut self, username: impl AsRef<T>) -> Result<(), std::io::Error>
+    pub fn create_session<T>(&mut self, username: T) -> Result<(), std::io::Error>
     where
-        T: Writeable,
+        T: Writeable + AsRef<T>,
     {
         if self.started_session {
             return Err(std::io::Error::new(
