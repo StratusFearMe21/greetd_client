@@ -33,9 +33,9 @@
 //!
 
 use calloop::{EventSource, Interest, PostAction, Token};
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::RefCell,
     fmt::{Debug, Display},
     io::{Read, Write},
     os::unix::{net::UnixStream, prelude::AsRawFd},
@@ -46,14 +46,14 @@ use std::{
 use writeable::{LengthHint, Writeable};
 
 pub struct Greetd {
-    socket: Rc<Mutex<UnixStream>>,
+    socket: Rc<RefCell<UnixStream>>,
     started_session: bool,
     request_in_queue: Rc<AtomicBool>,
     finishing: Rc<AtomicBool>,
 }
 
 pub struct GreetdSource {
-    socket: Rc<Mutex<UnixStream>>,
+    socket: Rc<RefCell<UnixStream>>,
     request_in_queue: Rc<AtomicBool>,
     token: Token,
     finishing: Rc<AtomicBool>,
@@ -61,7 +61,7 @@ pub struct GreetdSource {
 
 impl EventSource for GreetdSource {
     type Event = Response;
-    type Metadata = Self;
+    type Metadata = ();
     type Ret = ();
 
     fn process_events<F>(
@@ -73,19 +73,30 @@ impl EventSource for GreetdSource {
     where
         F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
     {
-        let response = Response::read_from(&mut *self.socket.lock())?;
-        if let Response::Success = response {
-            if self.finishing.load(std::sync::atomic::Ordering::SeqCst) {
-                callback(Response::Finish, self);
-                return Ok(PostAction::Remove);
-            } else {
-                callback(response, self);
-            }
-        } else {
-            callback(response, self);
-        }
+        let response = Response::read_from(&mut *self.socket.borrow_mut())?;
         self.request_in_queue
             .store(false, std::sync::atomic::Ordering::SeqCst);
+        match response {
+            Response::Success => {
+                if self.finishing.load(std::sync::atomic::Ordering::SeqCst) {
+                    callback(Response::Finish, &mut ());
+                    return Ok(PostAction::Remove);
+                } else {
+                    callback(response, &mut ());
+                }
+            }
+            Response::Error {
+                error_type: ErrorType::AuthError,
+                ..
+            } => {
+                *self.socket.borrow_mut() = UnixStream::connect(
+                    std::env::var("GREETD_SOCK")
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?,
+                )?;
+                return Ok(PostAction::Reregister);
+            }
+            _ => callback(response, &mut ()),
+        }
         Ok(PostAction::Continue)
     }
 
@@ -96,7 +107,7 @@ impl EventSource for GreetdSource {
     ) -> Result<(), std::io::Error> {
         self.token = token_factory.token();
         poll.register(
-            self.socket.lock().as_raw_fd(),
+            self.socket.borrow().as_raw_fd(),
             Interest::READ,
             calloop::Mode::Level,
             self.token,
@@ -110,7 +121,7 @@ impl EventSource for GreetdSource {
     ) -> Result<(), std::io::Error> {
         self.token = token_factory.token();
         poll.reregister(
-            self.socket.lock().as_raw_fd(),
+            self.socket.borrow().as_raw_fd(),
             Interest::READ,
             calloop::Mode::Level,
             self.token,
@@ -119,13 +130,13 @@ impl EventSource for GreetdSource {
 
     fn unregister(&mut self, poll: &mut calloop::Poll) -> Result<(), std::io::Error> {
         self.token = Token::invalid();
-        poll.unregister(self.socket.lock().as_raw_fd())
+        poll.unregister(self.socket.borrow().as_raw_fd())
     }
 }
 
 impl AsRawFd for Greetd {
     fn as_raw_fd(&self) -> std::os::unix::prelude::RawFd {
-        self.socket.lock().as_raw_fd()
+        self.socket.borrow().as_raw_fd()
     }
 }
 
@@ -147,7 +158,7 @@ impl Greetd {
     #[inline]
     pub fn new() -> Result<Self, std::io::Error> {
         Ok(Self {
-            socket: Rc::new(Mutex::new(UnixStream::connect(
+            socket: Rc::new(RefCell::new(UnixStream::connect(
                 std::env::var("GREETD_SOCK")
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?,
             )?)),
@@ -200,7 +211,12 @@ impl Greetd {
             self.started_session = false;
             self.write_msg(|socket| {
                 socket.write_all(&len.to_ne_bytes())?;
-                socket.write_fmt(format_args!("{}", wtr))
+                socket.write_fmt(format_args!("{}", wtr))?;
+                *socket = UnixStream::connect(
+                    std::env::var("GREETD_SOCK")
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?,
+                )?;
+                Ok(())
             })
         }
     }
@@ -272,7 +288,7 @@ impl Greetd {
         &self,
         callback: impl Fn(&mut UnixStream) -> Result<(), std::io::Error>,
     ) -> Result<(), std::io::Error> {
-        let mut lock = self.socket.lock();
+        let mut lock = self.socket.borrow_mut();
         callback(&mut *lock)
     }
 }
