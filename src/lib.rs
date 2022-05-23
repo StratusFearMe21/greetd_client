@@ -58,6 +58,7 @@ pub struct GreetdSource {
     started_session: Rc<AtomicBool>,
     token: Token,
     finishing: Rc<AtomicBool>,
+    cancel_session: bool,
 }
 
 impl EventSource for GreetdSource {
@@ -82,8 +83,10 @@ impl EventSource for GreetdSource {
                 if self.finishing.load(std::sync::atomic::Ordering::SeqCst) {
                     callback(Response::Finish, &mut ());
                     return Ok(PostAction::Remove);
-                } else {
+                } else if !self.cancel_session {
                     callback(response, &mut ());
+                } else {
+                    self.cancel_session = false;
                 }
             }
             Response::Error {
@@ -97,14 +100,10 @@ impl EventSource for GreetdSource {
                 self.write_msg(|socket| {
                     socket.write_all(&len.to_ne_bytes())?;
                     socket.write_fmt(format_args!("{}", wtr))?;
-                    *socket = UnixStream::connect(
-                        std::env::var("GREETD_SOCK")
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?,
-                    )?;
                     Ok(())
                 })?;
+                self.cancel_session = true;
                 callback(response, &mut ());
-                return Ok(PostAction::Reregister);
             }
             _ => callback(response, &mut ()),
         }
@@ -283,6 +282,7 @@ impl Greetd {
             token: Token::invalid(),
             finishing: self.finishing.clone(),
             started_session: self.started_session.clone(),
+            cancel_session: false,
         }
     }
 
