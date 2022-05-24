@@ -94,13 +94,12 @@ impl EventSource for GreetdSource {
                 self.started_session
                     .store(false, std::sync::atomic::Ordering::Release);
                 self.write_msg(Request::CancelSession)?;
-                self.old_fd = Some(std::mem::replace(
-                    &mut *self.socket.borrow_mut(),
-                    UnixStream::connect(
-                        std::env::var("GREETD_SOCK")
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?,
-                    )?,
-                ));
+                self.old_fd = Some(
+                    self.socket
+                        .replace(UnixStream::connect(std::env::var("GREETD_SOCK").map_err(
+                            |e| std::io::Error::new(std::io::ErrorKind::NotFound, e),
+                        )?)?),
+                );
                 self.request_in_queue
                     .store(false, std::sync::atomic::Ordering::Release);
                 callback(response, &mut ());
