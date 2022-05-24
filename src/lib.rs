@@ -78,10 +78,10 @@ impl EventSource for GreetdSource {
         let response = Response::read_from(&mut *self.socket.borrow_mut())?;
         match response {
             Response::Success => {
-                if self.finishing.load(std::sync::atomic::Ordering::SeqCst) {
+                if self.finishing.load(std::sync::atomic::Ordering::Acquire) {
                     callback(Response::Finish, &mut ());
                     self.request_in_queue
-                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                        .store(false, std::sync::atomic::Ordering::Release);
                     return Ok(PostAction::Remove);
                 } else {
                     callback(response, &mut ());
@@ -92,7 +92,7 @@ impl EventSource for GreetdSource {
                 ..
             } => {
                 self.started_session
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                    .store(false, std::sync::atomic::Ordering::Release);
                 self.write_msg(Request::CancelSession)?;
                 self.old_fd = Some(std::mem::replace(
                     &mut *self.socket.borrow_mut(),
@@ -102,14 +102,14 @@ impl EventSource for GreetdSource {
                     )?,
                 ));
                 self.request_in_queue
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                    .store(false, std::sync::atomic::Ordering::Release);
                 callback(response, &mut ());
                 return Ok(PostAction::Reregister);
             }
             _ => callback(response, &mut ()),
         }
         self.request_in_queue
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+            .store(false, std::sync::atomic::Ordering::Release);
         Ok(PostAction::Continue)
     }
 
@@ -170,6 +170,7 @@ impl GreetdSource {
 }
 
 impl AsRawFd for Greetd {
+    #[inline]
     fn as_raw_fd(&self) -> std::os::unix::prelude::RawFd {
         self.socket.borrow().as_raw_fd()
     }
@@ -179,8 +180,8 @@ impl Drop for Greetd {
     fn drop(&mut self) {
         if self
             .started_session
-            .load(std::sync::atomic::Ordering::SeqCst)
-            && !self.finishing.load(std::sync::atomic::Ordering::SeqCst)
+            .load(std::sync::atomic::Ordering::Acquire)
+            && !self.finishing.load(std::sync::atomic::Ordering::Acquire)
         {
             self.write_msg(Request::CancelSession).unwrap();
         }
@@ -205,7 +206,7 @@ impl Greetd {
     pub fn create_session(&mut self, username: &str) -> Result<(), std::io::Error> {
         if self
             .started_session
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
@@ -214,7 +215,7 @@ impl Greetd {
         }
         if self
             .request_in_queue
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
             Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
@@ -232,7 +233,7 @@ impl Greetd {
     ) -> Result<(), std::io::Error> {
         if self
             .request_in_queue
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
             Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
@@ -247,7 +248,7 @@ impl Greetd {
     pub fn start_session(&mut self, cmd: &[&str]) -> Result<(), std::io::Error> {
         if self
             .finishing
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
@@ -256,7 +257,7 @@ impl Greetd {
         }
         if self
             .request_in_queue
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
             Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
