@@ -91,21 +91,16 @@ impl EventSource for GreetdSource {
                 error_type: ErrorType::AuthError,
                 ..
             } => {
-                let wtr = Request::CancelSession;
-                let len: u32 = wtr.write_len().0 as _;
                 self.started_session
                     .store(false, std::sync::atomic::Ordering::SeqCst);
-                self.old_fd =
-                    Some(self.write_msg(|socket| {
-                        socket.write_all(&len.to_ne_bytes())?;
-                        socket.write_fmt(format_args!("{}", wtr))?;
-                        Ok(std::mem::replace(
-                            socket,
-                            UnixStream::connect(std::env::var("GREETD_SOCK").map_err(|e| {
-                                std::io::Error::new(std::io::ErrorKind::NotFound, e)
-                            })?)?,
-                        ))
-                    })?);
+                self.write_msg(Request::CancelSession)?;
+                self.old_fd = Some(std::mem::replace(
+                    &mut *self.socket.borrow_mut(),
+                    UnixStream::connect(
+                        std::env::var("GREETD_SOCK")
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?,
+                    )?,
+                ));
                 self.request_in_queue
                     .store(false, std::sync::atomic::Ordering::SeqCst);
                 callback(response, &mut ());
@@ -164,12 +159,13 @@ impl EventSource for GreetdSource {
 
 impl GreetdSource {
     #[inline]
-    fn write_msg<T>(
-        &self,
-        callback: impl Fn(&mut UnixStream) -> Result<T, std::io::Error>,
-    ) -> Result<T, std::io::Error> {
-        let mut lock = self.socket.borrow_mut();
-        callback(&mut *lock)
+    fn write_msg(&self, rq: Request) -> Result<(), std::io::Error> {
+        let len = rq.write_len().0;
+        let mut buf = String::with_capacity(len + 4);
+        unsafe { buf.as_mut_vec().write_all(&(len as u32).to_ne_bytes())? };
+        rq.write_to(&mut buf)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        self.socket.borrow_mut().write_all(buf.as_bytes())
     }
 }
 
@@ -186,13 +182,7 @@ impl Drop for Greetd {
             .load(std::sync::atomic::Ordering::SeqCst)
             && !self.finishing.load(std::sync::atomic::Ordering::SeqCst)
         {
-            let wtr = Request::CancelSession;
-            let len: u32 = wtr.write_len().0 as _;
-            self.write_msg(|socket| {
-                socket.write_all(&len.to_ne_bytes())?;
-                socket.write_fmt(format_args!("{}", wtr))
-            })
-            .unwrap();
+            self.write_msg(Request::CancelSession).unwrap();
         }
     }
 }
@@ -231,12 +221,7 @@ impl Greetd {
                 "greetd cannot process multiple events at once",
             ))
         } else {
-            let wtr = Request::CreateSession { username };
-            let len: u32 = wtr.write_len().0 as _;
-            self.write_msg(|socket| {
-                socket.write_all(&len.to_ne_bytes())?;
-                socket.write_fmt(format_args!("{}", wtr))
-            })
+            self.write_msg(Request::CreateSession { username })
         }
     }
 
@@ -254,12 +239,7 @@ impl Greetd {
                 "greetd cannot process multiple events at once",
             ))
         } else {
-            let wtr = Request::PostAuthMessageResponse { response };
-            let len: u32 = wtr.write_len().0 as _;
-            self.write_msg(|socket| {
-                socket.write_all(&len.to_ne_bytes())?;
-                socket.write_fmt(format_args!("{}", wtr))
-            })
+            self.write_msg(Request::PostAuthMessageResponse { response })
         }
     }
 
@@ -283,12 +263,7 @@ impl Greetd {
                 "greetd cannot process multiple events at once",
             ))
         } else {
-            let wtr = Request::StartSession { cmd };
-            let len: u32 = wtr.write_len().0 as _;
-            self.write_msg(|socket| {
-                socket.write_all(&len.to_ne_bytes())?;
-                socket.write_fmt(format_args!("{}", wtr))
-            })
+            self.write_msg(Request::StartSession { cmd })
         }
     }
 
@@ -305,12 +280,13 @@ impl Greetd {
     }
 
     #[inline]
-    fn write_msg(
-        &self,
-        callback: impl Fn(&mut UnixStream) -> Result<(), std::io::Error>,
-    ) -> Result<(), std::io::Error> {
-        let mut lock = self.socket.borrow_mut();
-        callback(&mut *lock)
+    fn write_msg(&self, rq: Request) -> Result<(), std::io::Error> {
+        let len = rq.write_len().0;
+        let mut buf = String::with_capacity(len + 4);
+        unsafe { buf.as_mut_vec().write_all(&(len as u32).to_ne_bytes())? };
+        rq.write_to(&mut buf)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        self.socket.borrow_mut().write_all(buf.as_bytes())
     }
 }
 
