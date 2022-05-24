@@ -57,8 +57,8 @@ pub struct GreetdSource {
     request_in_queue: Rc<AtomicBool>,
     started_session: Rc<AtomicBool>,
     token: Token,
+    old_fd: Option<UnixStream>,
     finishing: Rc<AtomicBool>,
-    cancel_session: bool,
 }
 
 impl EventSource for GreetdSource {
@@ -76,17 +76,15 @@ impl EventSource for GreetdSource {
         F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
     {
         let response = Response::read_from(&mut *self.socket.borrow_mut())?;
-        self.request_in_queue
-            .store(false, std::sync::atomic::Ordering::SeqCst);
         match response {
             Response::Success => {
                 if self.finishing.load(std::sync::atomic::Ordering::SeqCst) {
                     callback(Response::Finish, &mut ());
+                    self.request_in_queue
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
                     return Ok(PostAction::Remove);
-                } else if !self.cancel_session {
-                    callback(response, &mut ());
                 } else {
-                    self.cancel_session = false;
+                    callback(response, &mut ());
                 }
             }
             Response::Error {
@@ -97,16 +95,26 @@ impl EventSource for GreetdSource {
                 let len: u32 = wtr.write_len().0 as _;
                 self.started_session
                     .store(false, std::sync::atomic::Ordering::SeqCst);
-                self.write_msg(|socket| {
-                    socket.write_all(&len.to_ne_bytes())?;
-                    socket.write_fmt(format_args!("{}", wtr))?;
-                    Ok(())
-                })?;
-                self.cancel_session = true;
+                self.old_fd =
+                    Some(self.write_msg(|socket| {
+                        socket.write_all(&len.to_ne_bytes())?;
+                        socket.write_fmt(format_args!("{}", wtr))?;
+                        Ok(std::mem::replace(
+                            socket,
+                            UnixStream::connect(std::env::var("GREETD_SOCK").map_err(|e| {
+                                std::io::Error::new(std::io::ErrorKind::NotFound, e)
+                            })?)?,
+                        ))
+                    })?);
+                self.request_in_queue
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
                 callback(response, &mut ());
+                return Ok(PostAction::Reregister);
             }
             _ => callback(response, &mut ()),
         }
+        self.request_in_queue
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(PostAction::Continue)
     }
 
@@ -130,12 +138,22 @@ impl EventSource for GreetdSource {
         token_factory: &mut calloop::TokenFactory,
     ) -> Result<(), std::io::Error> {
         self.token = token_factory.token();
-        poll.reregister(
-            self.socket.borrow().as_raw_fd(),
-            Interest::READ,
-            calloop::Mode::Level,
-            self.token,
-        )
+        if let Some(old_fd) = self.old_fd.take() {
+            poll.unregister(old_fd.as_raw_fd())?;
+            poll.register(
+                self.socket.borrow().as_raw_fd(),
+                Interest::READ,
+                calloop::Mode::Level,
+                self.token,
+            )
+        } else {
+            poll.reregister(
+                self.socket.borrow().as_raw_fd(),
+                Interest::READ,
+                calloop::Mode::Level,
+                self.token,
+            )
+        }
     }
 
     fn unregister(&mut self, poll: &mut calloop::Poll) -> Result<(), std::io::Error> {
@@ -146,10 +164,10 @@ impl EventSource for GreetdSource {
 
 impl GreetdSource {
     #[inline]
-    fn write_msg(
+    fn write_msg<T>(
         &self,
-        callback: impl Fn(&mut UnixStream) -> Result<(), std::io::Error>,
-    ) -> Result<(), std::io::Error> {
+        callback: impl Fn(&mut UnixStream) -> Result<T, std::io::Error>,
+    ) -> Result<T, std::io::Error> {
         let mut lock = self.socket.borrow_mut();
         callback(&mut *lock)
     }
@@ -282,7 +300,7 @@ impl Greetd {
             token: Token::invalid(),
             finishing: self.finishing.clone(),
             started_session: self.started_session.clone(),
-            cancel_session: false,
+            old_fd: None,
         }
     }
 
