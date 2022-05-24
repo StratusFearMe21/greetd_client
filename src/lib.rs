@@ -494,7 +494,7 @@ impl Response {
         let len = u32::from_ne_bytes(len_bytes);
         let mut resp_buf = vec![0; len as usize];
         stream.read_exact(&mut resp_buf)?;
-        serde_json::from_slice(&mut resp_buf).map_err(|e| e.into())
+        serde_json::from_slice(&resp_buf).map_err(|e| e.into())
     }
 }
 
